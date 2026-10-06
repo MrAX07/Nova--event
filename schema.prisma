@@ -1,0 +1,294 @@
+// Nova Events database schema (PostgreSQL)
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum EventType {
+  GIVEAWAY
+  NUMBER
+}
+
+enum EventStatus {
+  SCHEDULED
+  ACTIVE
+  PAUSED
+  ENDED
+  CANCELLED
+}
+
+enum WinnerStatus {
+  VALID
+  REJECTED
+}
+
+enum TicketType {
+  SUPPORT
+  PRIZE
+}
+
+enum TicketStatus {
+  OPEN
+  CLOSED
+}
+
+enum TxType {
+  JOIN
+  ADD
+  REMOVE
+  SET
+}
+
+/// One row per Discord server. Holds all settings.
+model Guild {
+  id                    String   @id
+  name                  String   @default("")
+  timezone              String   @default("UTC")
+  giveawayChannelId     String?
+  numberChannelId       String?
+  logChannelId          String?
+  /// { CATEGORY: channelId } overrides, e.g. { "ENTRY": "123" }
+  logChannels           Json     @default("{}")
+  /// Log categories that are switched off ("JOIN" = button entries, off by default)
+  disabledLogCategories String[] @default(["JOIN"])
+  logRoleChanges        Boolean  @default(true)
+  ownerRoleIds          String[] @default([])
+  highAdminRoleIds      String[] @default([])
+  eventManagerRoleIds   String[] @default([])
+  moderatorRoleIds      String[] @default([])
+  winnerRoleId          String?
+  testMode              Boolean  @default(false)
+  defaults              Json     @default("{}")
+  messages              Json     @default("{}")
+  endingSoonSeconds     Int[]    @default([300, 60, 30])
+  dashboardEnabled      Boolean  @default(true)
+  setupDone             Boolean  @default(false)
+  ticketCategoryId      String?
+  ticketSupportRoleIds  String[] @default([])
+  ticketPrizeRoleIds    String[] @default([])
+  ticketCounter         Int      @default(0)
+  createdAt             DateTime @default(now())
+  updatedAt             DateTime @updatedAt
+}
+
+/// Giveaways and number events share this table so every event has one unique ID (EVENT-12345).
+model Event {
+  id             String      @id @default(cuid())
+  code           String      @unique
+  guildId        String
+  type           EventType
+  status         EventStatus @default(ACTIVE)
+  prize          String
+  winnerCount    Int         @default(1)
+  channelId      String
+  messageId      String?
+  hostId         String
+  isTest         Boolean     @default(false)
+  startsAt       DateTime
+  endsAt         DateTime?
+  durationSec    Int
+  remainingSec   Int?
+  pausedAt       DateTime?
+  endedAt        DateTime?
+  endingNotified Int[]       @default([])
+  winnersDrawn   Boolean     @default(false)
+  /// Number events only
+  secretNumber   Int?
+  winnersFound   Int         @default(0)
+  hintsSent      Int         @default(0)
+  config         Json        @default("{}")
+  createdAt      DateTime    @default(now())
+  updatedAt      DateTime    @updatedAt
+
+  entries Entry[]
+  winners Winner[]
+
+  @@index([guildId, status])
+  @@index([guildId, type, createdAt])
+  @@index([status, endsAt])
+  @@index([status, startsAt])
+  @@index([channelId, status])
+}
+
+model Entry {
+  id        String   @id @default(cuid())
+  eventId   String
+  guildId   String
+  userId    String
+  amount    Int
+  isTest    Boolean  @default(false)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  event Event @relation(fields: [eventId], references: [id], onDelete: Cascade)
+
+  @@unique([eventId, userId])
+  @@index([guildId, userId])
+  @@index([eventId, amount])
+}
+
+/// Every single change to an entry amount (join, manual add/remove/set).
+model EntryTransaction {
+  id        String   @id @default(cuid())
+  guildId   String
+  eventId   String?
+  eventCode String?
+  userId    String
+  type      TxType
+  delta     Int
+  before    Int
+  after     Int
+  actorId   String?
+  reason    String?
+  isTest    Boolean  @default(false)
+  createdAt DateTime @default(now())
+
+  @@index([guildId, userId, createdAt])
+  @@index([eventId, createdAt])
+  @@index([guildId, createdAt])
+}
+
+model Winner {
+  id           String       @id @default(cuid())
+  eventId      String
+  guildId      String
+  userId       String
+  place        Int?
+  prize        String?
+  status       WinnerStatus @default(VALID)
+  rejectReason String?
+  rerolled     Boolean      @default(false)
+  eventType    EventType
+  isTest       Boolean      @default(false)
+  createdAt    DateTime     @default(now())
+
+  event Event @relation(fields: [eventId], references: [id], onDelete: Cascade)
+
+  @@unique([eventId, place])
+  @@index([guildId, userId])
+  @@index([guildId, status, eventType])
+  @@index([eventId, status])
+}
+
+model Template {
+  id        String   @id @default(cuid())
+  guildId   String
+  name      String
+  data      Json
+  createdBy String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([guildId, name])
+}
+
+/// eventCode = null means the user is blacklisted from every giveaway.
+model Blacklist {
+  id        String   @id @default(cuid())
+  guildId   String
+  userId    String
+  eventCode String?
+  reason    String?
+  addedBy   String
+  createdAt DateTime @default(now())
+
+  @@index([guildId, userId])
+  @@index([guildId, eventCode])
+}
+
+model AuditLog {
+  id         String   @id @default(cuid())
+  guildId    String
+  actorId    String?
+  action     String
+  category   String
+  targetType String?
+  targetId   String?
+  eventCode  String?
+  before     Json?
+  after      Json?
+  reason     String?
+  source     String   @default("discord")
+  createdAt  DateTime @default(now())
+
+  @@index([guildId, createdAt])
+  @@index([guildId, category, createdAt])
+  @@index([guildId, targetId])
+  @@index([guildId, actorId])
+  @@index([guildId, eventCode])
+}
+
+model ErrorLog {
+  id        String   @id @default(cuid())
+  guildId   String?
+  scope     String
+  message   String
+  stack     String?
+  createdAt DateTime @default(now())
+
+  @@index([createdAt])
+  @@index([guildId, createdAt])
+}
+
+/// Cached Discord username/avatar so the dashboard can show names.
+model UserProfile {
+  id        String   @id
+  username  String
+  avatar    String?
+  updatedAt DateTime @updatedAt
+}
+
+/// Message counters used for the "minimum messages" requirement.
+model MemberActivity {
+  guildId  String
+  userId   String
+  messages Int      @default(0)
+
+  @@id([guildId, userId])
+}
+
+/// Dashboard login sessions. The id is a hash, the real id only lives in the cookie.
+model WebSession {
+  id        String   @id
+  userId    String
+  username  String
+  avatar    String?
+  csrf      String
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+
+  @@index([expiresAt])
+  @@index([userId])
+}
+
+/// Support- og præmie-tickets (hver ticket er en privat kanal).
+model Ticket {
+  id          String       @id @default(cuid())
+  guildId     String
+  number      Int
+  type        TicketType
+  status      TicketStatus @default(OPEN)
+  channelId   String?
+  userId      String
+  subject     String
+  details     String       @default("")
+  eventCode   String?
+  prize       String?
+  verified    Boolean      @default(false)
+  claimedBy   String?
+  closedBy    String?
+  closeReason String?
+  transcript  String?
+  createdAt   DateTime     @default(now())
+  closedAt    DateTime?
+
+  @@unique([guildId, number])
+  @@index([guildId, status])
+  @@index([guildId, userId, status])
+  @@index([channelId])
+}
